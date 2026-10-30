@@ -48,9 +48,14 @@ def pretty_print_msg(msg):
     print("\n---")
 
 
+def get_config():
+    config = {"configurable": {"thread_id": uuid.uuid4()}}
+    return config
+
+
 class TestEarlyReturn(TestCase):
-    def test_before_model(self):
-        config = {"configurable": {"thread_id": uuid.uuid4()}}
+    def test_early_return(self):
+        config = get_config()
         model = FakeToolCallingModel(messages=iter([
             AIMessage(content="", tool_calls=[
                 ToolCall(name=skip_llm_call_tool_name, args={
@@ -68,9 +73,30 @@ class TestEarlyReturn(TestCase):
         self.assertTrue(last_msg.content.startswith(
             "Output of tool read_mail:"), last_msg.content)
 
+    def test_long_conversation(self):
+        config = get_config()
+        model = FakeToolCallingModel(messages=iter([
+            AIMessage(content="", tool_calls=[
+                # Normally this won't happen because the tool is not even added
+                # But here we test if the skip logic is triggered any way
+                # TODO: find a way to test the list of tools passed to the LLM and confirm that "skip" is removed
+                ToolCall(name=skip_llm_call_tool_name, args={
+                }, id="1"),
+                ToolCall(name=read_mail.name, args={}, id="2"), ]),
+            AIMessage(content="Done")
+        ]))
+        agent = create_agent(model=model, checkpointer=InMemorySaver(), tools=[
+            read_mail], middleware=[EarlyReturnMiddleware(disable_after_messages=2)])
+        res = agent.invoke(
+            {"messages": [("user", "Hey!"), ("assistant", "Hi"), ("user", "how are you?"), ("assistant", "Fine, what about you?"), ("user", "great, no read my email please")]}, config)
+        last_msg = res["messages"][-1]
+        pretty_print_msg(last_msg)
+        self.assertTrue(last_msg.content.startswith(
+            "Done"), last_msg.content)
+
     @unittest.skip("Costs money")
     def test_single_call(self):
-        config = {"configurable": {"thread_id": uuid.uuid4()}}
+        config = get_config()
         agent = create_agent(model=real_model, checkpointer=InMemorySaver(), tools=[
             read_mail], middleware=[EarlyReturnMiddleware()])
         res = agent.invoke(

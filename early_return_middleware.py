@@ -26,6 +26,9 @@ def skip_llm_call():
 class EarlyReturnState(AgentState):
     early_return_called: bool
     early_return_expected_tool_calls: int
+    # EarlyReturn is disabled as soon as the conversion grows longer
+    # Even if the messages list is shrunk later on (summarization for instance)
+    early_return_disabled: bool
 
 
 class EarlyReturnMiddleware(AgentMiddleware):
@@ -42,12 +45,21 @@ class EarlyReturnMiddleware(AgentMiddleware):
         self.disable_after_messages = disable_after_messages
         self.never_disable = never_disable
 
-    def wrap_model_call(self, request: ModelRequest, handler: Callable[[ModelRequest], ModelResponse]):
-        ai_msgs = [m for m in request.state["messages"]
+    def _should_disable_early_return(self, state: EarlyReturnState):
+        if self.never_disable:
+            return False
+        if state.get("early_return_disabled"):
+            return True
+        ai_msgs = [m for m in state["messages"]
                    if isinstance(m, AIMessage)]
+        print("ai_msgs", len(ai_msgs))
+        return len(
+            ai_msgs) > self.disable_after_messages
+
+    def wrap_model_call(self, request: ModelRequest, handler: Callable[[ModelRequest], ModelResponse]):
         # If conversation is growing too long, disable the tool
         # (doesn't add value and bloat the tool list)
-        if not self.never_disable and len(ai_msgs) >= self.disable_after_messages:
+        if self._should_disable_early_return(request.state):
             # Filter out the skip tool to disable EarlyReturn
             tools = [t for t in request.tools if t.name !=
                      skip_llm_call_tool_name]
@@ -57,12 +69,14 @@ class EarlyReturnMiddleware(AgentMiddleware):
 
     def after_model(self, state: EarlyReturnState, runtime: Runtime):
         """
-        Detect LLM calls to the return_direct tool and set a flag in the state
+        Detect LLM calls to the skip tool and set a flag in the state
         Alternative : parse messages everytime in apply_return_direct,
         but it would be more compute intensive
         """
+        if self._should_disable_early_return(state):
+            return None
         last_msg = state["messages"][-1]
-        # Detect a call to "return_direct" tool
+        # Detect a call to the skip tool
         if isinstance(last_msg, AIMessage):
             early_return = next(
                 (tc for tc in last_msg.tool_calls if tc["name"]
@@ -84,7 +98,12 @@ class EarlyReturnMiddleware(AgentMiddleware):
         """
         Skip the final LLM call if early return has been triggered
         """
-        # If skip tool was called and detected in after_model
+        if self._should_disable_early_return(state):
+            # Cache early return computation to avoid computing the lenght of message list on each turn
+            return {
+                "early_return_disabled": True
+            }
+        # If skip tool was not called, skip
         if not state.get("early_return_called"):
             return None
         expected_tool_calls = state.get(
