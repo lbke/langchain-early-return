@@ -12,7 +12,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langchain_core.language_models.fake_chat_models import FakeChatModel, GenericFakeChatModel
 
 
-from early_return_middleware import EarlyReturnMiddleware, skip_llm_call_tool_name
+from early_return_middleware import EarlyReturnMiddleware, EarlyReturnState, skip_llm_call_tool_name
 
 
 class FakeToolCallingModel(GenericFakeChatModel):
@@ -52,17 +52,21 @@ class TestEarlyReturn(TestCase):
     def test_before_model(self):
         config = {"configurable": {"thread_id": uuid.uuid4()}}
         model = FakeToolCallingModel(messages=iter([
-            AIMessage(content="", tool_calls=[ToolCall(name=skip_llm_call_tool_name, args={
-            }, id="1"), ToolCall(name=read_mail.name, args={}, id="2")])
+            AIMessage(content="", tool_calls=[
+                ToolCall(name=skip_llm_call_tool_name, args={
+                }, id="1"),
+                ToolCall(name=read_mail.name, args={}, id="2"), ]),
+            AIMessage(
+                content="This message should not be reached with EarlyReturn")
         ]))
         agent = create_agent(model=model, checkpointer=InMemorySaver(), tools=[
             read_mail], middleware=[EarlyReturnMiddleware()])
         res = agent.invoke(
             {"messages": [("user", "Display email content")]}, config)
-        last_msg = res["messages"][-1].content
+        last_msg = res["messages"][-1]
         pretty_print_msg(last_msg)
-        self.assertTrue(last_msg.content.startsWith(
-            "Aggregated"), last_msg.content)
+        self.assertTrue(last_msg.content.startswith(
+            "Output of tool read_mail:"), last_msg.content)
 
     @unittest.skip("Costs money")
     def test_single_call(self):

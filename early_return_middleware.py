@@ -1,10 +1,12 @@
-from typing import Annotated, Callable
-from typing_extensions import NotRequired
+from typing import Callable
 from langchain.tools import tool
-from langchain.agents.middleware import AgentMiddleware, AgentState, ExtendedModelResponse, ModelRequest, ModelResponse
+from langchain.agents.middleware import AgentMiddleware, AgentState, ModelRequest, ModelResponse, hook_config
 from langchain.agents.middleware.types import PrivateStateAttr
 from langchain_core.messages import AIMessage, ToolMessage
 from langgraph.runtime import Runtime
+import logging
+logger = logging.getLogger(__name__)
+
 
 skip_llm_call_tool_name = "skip_llm_call"
 
@@ -27,6 +29,7 @@ class EarlyReturnState(AgentState):
 
 
 class EarlyReturnMiddleware(AgentMiddleware):
+    state_schema = EarlyReturnState
     # We can't add tools dynamically, only filter them out
     tools = [skip_llm_call]
 
@@ -57,18 +60,22 @@ class EarlyReturnMiddleware(AgentMiddleware):
                  == skip_llm_call_tool_name),
                 None,
             )
+            logger.debug(f"Has early return: {bool(early_return)}")
             if early_return:
-                state["early_return_called"] = True,
-                state["early_return_expected_tool_calls"] = len(
-                    last_msg.tool_calls),
+                return {
+                    "early_return_called": True,
+                    "early_return_expected_tool_calls": len(
+                        last_msg.tool_calls)
+                }
         # Always reset, the state is persisted by the checkpointer across invocations
         return None
 
+    @hook_config(can_jump_to=["end"])
     def before_model(self, state: EarlyReturnState, runtime: Runtime):
         """
         Skip the final LLM call if early return has been triggered
         """
-        # If return_direct was called
+        # If skip tool was called and detected in after_model
         if not state.get("early_return_called"):
             return None
         expected_tool_calls = state.get(
@@ -76,6 +83,7 @@ class EarlyReturnMiddleware(AgentMiddleware):
         # Get latest tool calls
         idx = 1
         tool_msgs = []
+        # Get all tool message to build the final AIMessage manually
         while idx <= len(state["messages"]):
             msg = state["messages"][-idx]
             if isinstance(msg, ToolMessage):
@@ -83,8 +91,9 @@ class EarlyReturnMiddleware(AgentMiddleware):
                 idx += 1
             else:
                 break
-        # We are still waiting for some tool messages
+        # We are still waiting for some tool messages, let the loop run
         if len(tool_msgs) < expected_tool_calls:
+            print("Waiting for tool call")
             return None
         # We have collected all tool calls, we can return the aggregated content
         agg_content = ""
@@ -97,6 +106,7 @@ class EarlyReturnMiddleware(AgentMiddleware):
         # https://docs.langchain.com/oss/python/langchain/middleware/custom#agent-jumps
         return {
             "messages": [AIMessage(content=agg_content)],
-            "early_return_called": False,
+            "early_return_called": None,
+            "early_return_expected_tool_calls": None,
             "jump_to": "end",
         }
