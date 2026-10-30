@@ -2,18 +2,28 @@ import os
 from typing import TypedDict
 import uuid
 from langchain.agents import create_agent
+import unittest
 from unittest import TestCase
+from langchain.messages import AIMessage, ToolCall
 from langchain.tools import tool
 from langchain_openrouter import ChatOpenRouter
 from langgraph.checkpoint.memory import InMemorySaver
+# https://docs.langchain.com/oss/python/langchain/test/unit-testing
+from langchain_core.language_models.fake_chat_models import FakeChatModel, GenericFakeChatModel
 
-from early_return_middleware import EarlyReturnMiddleware
+
+from early_return_middleware import EarlyReturnMiddleware, skip_llm_call_tool_name
+
+
+class FakeToolCallingModel(GenericFakeChatModel):
+    def bind_tools(self, tools, **kwargs):
+        return self
+
 
 if not os.environ.get("OPENROUTER_API_KEY"):
     raise Exception("Test expects a valid OPENROUTER_API_KEY for LLM calls")
-
-model = ChatOpenRouter(model="google/gemini-2.5-flash",
-                       api_key=os.environ["OPENROUTER_API_KEY"])
+real_model = ChatOpenRouter(
+    model="google/gemini-2.5-flash", api_key=os.environ["OPENROUTER_API_KEY"])
 
 
 @tool
@@ -32,11 +42,33 @@ class Context(TypedDict):
     pass
 
 
+def pretty_print_msg(msg):
+    print("\n---")
+    print(msg.pretty_print())
+    print("\n---")
+
+
 class TestEarlyReturn(TestCase):
+    def test_before_model(self):
+        config = {"configurable": {"thread_id": uuid.uuid4()}}
+        model = FakeToolCallingModel(messages=iter([
+            AIMessage(content="", tool_calls=[ToolCall(name=skip_llm_call_tool_name, args={
+            }, id="1"), ToolCall(name=read_mail.name, args={}, id="2")])
+        ]))
+        agent = create_agent(model=model, checkpointer=InMemorySaver(), tools=[
+            read_mail], middleware=[EarlyReturnMiddleware()])
+        res = agent.invoke(
+            {"messages": [("user", "Display email content")]}, config)
+        last_msg = res["messages"][-1].content
+        pretty_print_msg(last_msg)
+        self.assertTrue(last_msg.content.startsWith(
+            "Aggregated"), last_msg.content)
+
+    @unittest.skip("Costs money")
     def test_single_call(self):
         config = {"configurable": {"thread_id": uuid.uuid4()}}
-        agent = create_agent(model=model, checkpointer=InMemorySaver(), tools=[
-                             read_mail], middleware=[EarlyReturnMiddleware()])
+        agent = create_agent(model=real_model, checkpointer=InMemorySaver(), tools=[
+            read_mail], middleware=[EarlyReturnMiddleware()])
         res = agent.invoke(
             {"messages": ["Display the content of the mail"]}, config)
         last_msg = res["messages"][-1]
@@ -46,6 +78,7 @@ class TestEarlyReturn(TestCase):
         self.assertEqual(last_msg.content,
                          "Output of tool read_mail:\n Hello!")
 
+    @unittest.skip("Costs money")
     def test_longer_operation(self):
         """
         As soon as there are more than one tool, early_return is disabled
@@ -55,8 +88,8 @@ class TestEarlyReturn(TestCase):
         instead you should use the "return_direct" option on the tool
         """
         config = {"configurable": {"thread_id": uuid.uuid4()}}
-        agent = create_agent(model=model, checkpointer=InMemorySaver(), tools=[read_mail, reply], middleware=[
-                             EarlyReturnMiddleware()])
+        agent = create_agent(model=real_model, checkpointer=InMemorySaver(), tools=[read_mail, reply], middleware=[
+            EarlyReturnMiddleware()])
         res = agent.invoke(
             {"messages": ["Read mail, then reply to it automatically with 'Hello you !'."]}, config)
         last_msg = res["messages"][-1]
