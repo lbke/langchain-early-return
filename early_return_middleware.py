@@ -1,8 +1,8 @@
-from typing import Callable
+from typing import Callable, Optional
 from langchain.tools import tool
 from langchain.agents.middleware import AgentMiddleware, AgentState, ModelRequest, ModelResponse, hook_config
 from langchain.agents.middleware.types import PrivateStateAttr
-from langchain_core.messages import AIMessage, ToolMessage
+from langchain_core.messages import AIMessage, ToolMessage, SystemMessage, ai
 from langgraph.runtime import Runtime
 import logging
 logger = logging.getLogger(__name__)
@@ -32,19 +32,28 @@ class EarlyReturnMiddleware(AgentMiddleware):
     state_schema = EarlyReturnState
     # We can't add tools dynamically, only filter them out
     tools = [skip_llm_call]
+    # For long conversations with complex tasks EarlyReturn brings little token reduction
+    # So we disable it after N AI messages
+    # Recommanded value: from 1 to 5
+    disable_after_messages: int
+    never_disable: bool
+
+    def __init__(self, disable_after_messages=1, never_disable=False):
+        self.disable_after_messages = disable_after_messages
+        self.never_disable = never_disable
 
     def wrap_model_call(self, request: ModelRequest, handler: Callable[[ModelRequest], ModelResponse]):
-        msgs = request.state["messages"]
-        # System + User + AI or User + AI + User => not in an "early" return case
-        if len(msgs) >= 3:
-            return handler(request)
-        # User + AI => do not add tool
-        if len(msgs) == 2 and msgs[-1].type == "ai":
-            return handler(request)
-        # System + AI or User => first message of the conversation, must add the skip_llm tool
-        tools = [t for t in request.tools if t.name !=
-                 skip_llm_call_tool_name]
-        return handler(request.override(tools=tools))
+        ai_msgs = [m for m in request.state["messages"]
+                   if isinstance(m, AIMessage)]
+        # If conversation is growing too long, disable the tool
+        # (doesn't add value and bloat the tool list)
+        if not self.never_disable and len(ai_msgs) >= self.disable_after_messages:
+            # Filter out the skip tool to disable EarlyReturn
+            tools = [t for t in request.tools if t.name !=
+                     skip_llm_call_tool_name]
+            return handler(request.override(tools=tools))
+        # EarlyReturn is enabled
+        return handler(request)
 
     def after_model(self, state: EarlyReturnState, runtime: Runtime):
         """
@@ -93,7 +102,6 @@ class EarlyReturnMiddleware(AgentMiddleware):
                 break
         # We are still waiting for some tool messages, let the loop run
         if len(tool_msgs) < expected_tool_calls:
-            print("Waiting for tool call")
             return None
         # We have collected all tool calls, we can return the aggregated content
         agg_content = ""
