@@ -52,7 +52,6 @@ class EarlyReturnMiddleware(AgentMiddleware):
             return True
         ai_msgs = [m for m in state["messages"]
                    if isinstance(m, AIMessage)]
-        print("ai_msgs", len(ai_msgs))
         return len(
             ai_msgs) > self.disable_after_messages
 

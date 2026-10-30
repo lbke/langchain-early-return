@@ -94,7 +94,6 @@ class TestEarlyReturn(TestCase):
         self.assertTrue(last_msg.content.startswith(
             "Done"), last_msg.content)
 
-    @unittest.skip("Costs money")
     def test_single_call(self):
         config = get_config()
         agent = create_agent(model=real_model, checkpointer=InMemorySaver(), tools=[
@@ -105,10 +104,9 @@ class TestEarlyReturn(TestCase):
         print("\n---")
         print(last_msg.pretty_print())
         print("\n---")
-        self.assertEqual(last_msg.content,
-                         "Output of tool read_mail:\n Hello!")
+        self.assertTrue(last_msg.content.startswith(
+            "Output of tool read_mail:"), last_msg.content)
 
-    @unittest.skip("Costs money")
     def test_longer_operation(self):
         """
         As soon as there are more than one tool, early_return is disabled
@@ -117,7 +115,7 @@ class TestEarlyReturn(TestCase):
         early return middleware is not the right solution,
         instead you should use the "return_direct" option on the tool
         """
-        config = {"configurable": {"thread_id": uuid.uuid4()}}
+        config = get_config()
         agent = create_agent(model=real_model, checkpointer=InMemorySaver(), tools=[read_mail, reply], middleware=[
             EarlyReturnMiddleware()])
         res = agent.invoke(
@@ -126,3 +124,5 @@ class TestEarlyReturn(TestCase):
         print("\n---")
         print(last_msg.pretty_print())
         print("\n---")
+        self.assertFalse(last_msg.content.startswith(
+            "Output of tool"), last_msg.content)
