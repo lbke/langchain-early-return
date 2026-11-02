@@ -8,3 +8,10 @@ dependencies = [
     "langchain>=1.4.7",
     "langchain-openrouter>=0.2.9",
 ]
+
+[dependency-groups]
+dev = [
+    "datasets>=5.1.0",
+    "huggingface-hub>=2.4.0",
+    "polars>=2.1.0",
+]
