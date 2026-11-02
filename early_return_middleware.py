@@ -118,6 +118,11 @@ class EarlyReturnMiddleware(AgentMiddleware):
                 idx += 1
             else:
                 break
+        # If a lst one tool has an error: never skip the LLM call
+        # Errors are detected by "ToolNode" and caught automatically with "status: error" added on the tool message
+        # https://reference.langchain.com/python/langchain-core/messages/tool/ToolMessage/status
+        if any([m for m in tool_msgs if m.status == "error"]):
+            return None
         # We are still waiting for some tool messages, let the loop run
         if len(tool_msgs) < expected_tool_calls:
             return None
