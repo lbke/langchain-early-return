@@ -14,11 +14,13 @@ skip_llm_call_tool_name = "skip_llm_call"
 @tool(skip_llm_call_tool_name)
 def skip_llm_call():
     """
-    Use this tool in parallel to other tools whenever you think the tools direct output will be enough to answer the user questions
+    Use this tool in parallel to other tools whenever you think the tools direct output will be enough to answer the user questions, without needing a final message generation from the language model.
+    The final message will be the direct output of the tool, rather than the result of a model call.
     This reduces costs by avoiding a useless LLM inference
     - If multiple tools must be called in a sequence call only for the LAST tool in the sequence
     - Use this tool in parallel with the tools that you want to return directly without being read by the LLM, not AFTER (otherwise it is useless)
     - Never call this tool alone, it should always be called with other tools, otherwise it doesn't make sense
+    - If the user tasks expects a specific output from the LLM, do not trigger this tool since it will skip the final LLM text generation
     """
     return
 
