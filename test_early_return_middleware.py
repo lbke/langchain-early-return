@@ -4,6 +4,7 @@ import uuid
 from langchain.agents import AgentState, create_agent
 import unittest
 from unittest import TestCase
+from unittest.mock import Mock
 from langchain.messages import AIMessage, ToolCall, ToolMessage
 from langchain.tools import tool
 from langchain_openrouter import ChatOpenRouter
@@ -20,7 +21,6 @@ from langgraph.types import Command
 
 from early_return_middleware import (
     EarlyReturnMiddleware,
-    EarlyReturnState,
     skip_llm_call_tool_name,
 )
 
@@ -101,7 +101,8 @@ class TestEarlyReturn(TestCase):
 
     def test_long_conversation(self):
         """
-        Do not trigger dynamic direct return if conversation goes longer than configured lenght
+        Do not trigger dynamic direct return if conversation goes longer than configured length
+        Tool is still present but calling it is ignored by hooks
         """
         config = get_config()
         model = FakeToolCallingModel(
@@ -110,9 +111,6 @@ class TestEarlyReturn(TestCase):
                     AIMessage(
                         content="",
                         tool_calls=[
-                            # Normally this won't happen because the tool is not even added
-                            # But here we test if the skip logic is triggered any way
-                            # TODO: find a way to test the list of tools passed to the LLM and confirm that "skip" is removed
                             ToolCall(name=skip_llm_call_tool_name,
                                      args={}, id="1"),
                             ToolCall(name=read_mail.name, args={}, id="2"),
@@ -121,6 +119,11 @@ class TestEarlyReturn(TestCase):
                     AIMessage(content="Done"),
                 ]
             )
+        )
+        object.__setattr__(
+            model,
+            "bind_tools",
+            Mock(wraps=model.bind_tools),
         )
         agent = create_agent(
             model=model,
@@ -143,6 +146,62 @@ class TestEarlyReturn(TestCase):
         last_msg = res["messages"][-1]
         pretty_print_msg(last_msg)
         self.assertTrue(last_msg.content.startswith("Done"), last_msg.content)
+        seen_tools = model.bind_tools.call_args_list[-1].args[0]
+        seen_tool_names = [t.name for t in seen_tools]
+        self.assertIn(skip_llm_call_tool_name, seen_tool_names)
+        self.assertIn(read_mail.name, seen_tool_names)
+
+    def test_long_conversation_tool_remove(self):
+        """
+        If remove_tool is True and conversation is long, tool should be removed
+        """
+        config = get_config()
+        model = FakeToolCallingModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            ToolCall(name=skip_llm_call_tool_name,
+                                     args={}, id="1"),
+                            ToolCall(name=read_mail.name, args={}, id="2"),
+                        ],
+                    ),
+                    AIMessage(content="Done"),
+                ]
+            )
+        )
+        object.__setattr__(
+            model,
+            "bind_tools",
+            Mock(wraps=model.bind_tools),
+        )
+        agent = create_agent(
+            model=model,
+            checkpointer=InMemorySaver(),
+            tools=[read_mail],
+            middleware=[EarlyReturnMiddleware(
+                disable_after_messages=2, remove_tool=True)],
+        )
+        res = agent.invoke(
+            {
+                "messages": [
+                    ("user", "Hey!"),
+                    ("assistant", "Hi"),
+                    ("user", "how are you?"),
+                    ("assistant", "Fine, what about you?"),
+                    ("user", "great, no read my email please"),
+                ]
+            },
+            config,
+        )
+        last_msg = res["messages"][-1]
+        pretty_print_msg(last_msg)
+        self.assertTrue(last_msg.content.startswith("Done"), last_msg.content)
+        seen_tools = model.bind_tools.call_args_list[-1].args[0]
+        seen_tool_names = [t.name for t in seen_tools]
+        self.assertNotIn(skip_llm_call_tool_name, seen_tool_names)
+        self.assertIn(read_mail.name, seen_tool_names)
 
     def test_errored_tool(self):
         """

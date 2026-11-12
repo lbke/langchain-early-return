@@ -33,17 +33,35 @@ class EarlyReturnState(AgentState):
 
 class EarlyReturnMiddleware(AgentMiddleware):
     state_schema = EarlyReturnState
-    # We can't add tools dynamically, only filter them out
     tools = [skip_llm_call]
-    # For long conversations with complex tasks EarlyReturn brings little token reduction
-    # So we disable it after N AI messages
-    # Recommanded value: from 1 to 5
-    disable_after_messages: int
-    never_disable: bool
+    """
+    Enforce the skip LLM call
+    NOTE: a middleware can only filter tools dynamically, not add more,
+    all tools must be declared upfront hence this variable
+    """
 
-    def __init__(self, disable_after_messages=1, never_disable=False):
+    disable_after_messages: int
+    """
+    For long conversations with complex tasks EarlyReturn brings little token reduction
+    So we disable it after N AI messages
+    Recommanded value: from 1 to 5
+    """
+
+    remove_tool: bool
+    """
+    Removing a tool from the tools list may break caching
+    As a default, the tool is made inactive, but kept around in the cache
+    """
+
+    never_disable: bool
+    """
+    Keep early return active at all time even for long conversations
+    """
+
+    def __init__(self, disable_after_messages=1, never_disable=False, remove_tool=False):
         self.disable_after_messages = disable_after_messages
         self.never_disable = never_disable
+        self.remove_tool = remove_tool
 
     def _should_disable_early_return(self, state: EarlyReturnState):
         if self.never_disable:
@@ -56,9 +74,13 @@ class EarlyReturnMiddleware(AgentMiddleware):
             ai_msgs) > self.disable_after_messages
 
     def wrap_model_call(self, request: ModelRequest, handler: Callable[[ModelRequest], ModelResponse]):
-        # If conversation is growing too long, disable the tool
-        # (doesn't add value and bloat the tool list)
-        if self._should_disable_early_return(request.state):
+        """
+        Filter out the skip_llm tool under certain conditions
+
+        NOTE: filtering a tool may break cache, so it's not the default behaviour,
+        we favour keeping the tool around but disabling it
+        """
+        if self.remove_tool and self._should_disable_early_return(request.state):
             # Filter out the skip tool to disable EarlyReturn
             tools = [t for t in request.tools if t.name !=
                      skip_llm_call_tool_name]
@@ -98,7 +120,8 @@ class EarlyReturnMiddleware(AgentMiddleware):
         Skip the final LLM call if early return has been triggered
         """
         if self._should_disable_early_return(state):
-            # Cache early return computation to avoid computing the lenght of message list on each turn
+            # Cache early return computation
+            # to avoid computing the length of the message list on each turn
             return {
                 "early_return_disabled": True
             }
